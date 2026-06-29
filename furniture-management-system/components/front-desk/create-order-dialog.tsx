@@ -1,9 +1,11 @@
 "use client"
 
 import { useRef, useState } from "react"
-import { ImagePlus, Plus, X } from "lucide-react"
+import { useMutation, useQueryClient } from "@tanstack/react-query"
+import { ImagePlus, Loader2, Plus, X } from "lucide-react"
 import { toast } from "sonner"
 
+import api from "@/lib/api"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -21,34 +23,44 @@ import {
 import {
   Field,
   FieldDescription,
+  FieldError,
   FieldGroup,
   FieldLabel,
 } from "@/components/ui/field"
-import { useOrders } from "@/components/front-desk/orders-store"
 
-interface RefImage {
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface ImagePreview {
   id: string
-  name: string
+  file: File
   url: string
 }
 
+type FieldErrors = Record<string, string[]>
+
 const today = () => new Date().toISOString().slice(0, 10)
 
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
 export function CreateOrderDialog() {
-  const { addOrder } = useOrders()
+  const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const [customerName, setCustomerName] = useState("")
-  const [contact, setContact] = useState("")
-  const [furnitureType, setFurnitureType] = useState("")
-  const [size, setSize] = useState("")
-  const [quotedPrice, setQuotedPrice] = useState("")
-  const [orderDate, setOrderDate] = useState(today())
+  const [customerName, setCustomerName]         = useState("")
+  const [contact, setContact]                   = useState("")
+  const [furnitureType, setFurnitureType]       = useState("")
+  const [size, setSize]                         = useState("")
+  const [quotedPrice, setQuotedPrice]           = useState("")
   const [expectedDelivery, setExpectedDelivery] = useState("")
   const [requiresApproval, setRequiresApproval] = useState(false)
-  const [images, setImages] = useState<RefImage[]>([])
-  const [dragActive, setDragActive] = useState(false)
+  const [images, setImages]                     = useState<ImagePreview[]>([])
+  const [dragActive, setDragActive]             = useState(false)
+  const [fieldErrors, setFieldErrors]           = useState<FieldErrors>({})
 
   function resetForm() {
     setCustomerName("")
@@ -56,74 +68,81 @@ export function CreateOrderDialog() {
     setFurnitureType("")
     setSize("")
     setQuotedPrice("")
-    setOrderDate(today())
     setExpectedDelivery("")
     setRequiresApproval(false)
     setImages([])
+    setFieldErrors({})
   }
 
-  function addMockImages(files: FileList | null) {
-    // Mock only — we don't actually upload, just render thumbnails.
-    const incoming: RefImage[] = []
-    const count = files?.length ?? 1
-    for (let i = 0; i < count; i++) {
-      const file = files?.[i]
-      const url = file ? URL.createObjectURL(file) : ""
-      incoming.push({
-        id: `${Date.now()}-${i}`,
-        name: file?.name ?? `reference-${images.length + i + 1}.jpg`,
-        url,
-      })
-    }
-    setImages((prev) => [...prev, ...incoming])
+  function addImages(files: FileList | null) {
+    if (!files) return
+    const previews: ImagePreview[] = Array.from(files).map((file) => ({
+      id: `${Date.now()}-${Math.random()}`,
+      file,
+      url: URL.createObjectURL(file),
+    }))
+    setImages((prev) => [...prev, ...previews])
   }
 
   function removeImage(id: string) {
-    setImages((prev) => prev.filter((img) => img.id !== id))
+    setImages((prev) => {
+      const removed = prev.find((img) => img.id === id)
+      if (removed) URL.revokeObjectURL(removed.url)
+      return prev.filter((img) => img.id !== id)
+    })
   }
 
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    addOrder({
-      customerName: customerName.trim(),
-      contact: contact.trim(),
-      furnitureType: furnitureType.trim(),
-      size: size.trim(),
-      quotedPrice: Number.parseFloat(quotedPrice) || 0,
-      orderDate,
-      expectedDelivery,
-      requiresApproval,
-      referenceImages: images.map((i) => i.url).filter(Boolean),
-    })
-    toast.success("Order created", {
-      description: requiresApproval
-        ? `${furnitureType} sent for Director approval.`
-        : `${furnitureType} sent to the workshop.`,
-    })
-    resetForm()
-    setOpen(false)
-  }
+  const create = useMutation({
+    mutationFn: () => {
+      const form = new FormData()
+      form.append("customer_name", customerName.trim())
+      form.append("customer_phone", contact.trim())
+      form.append(
+        "item_description",
+        size.trim() ? `${furnitureType.trim()} — ${size.trim()}` : furnitureType.trim()
+      )
+      if (quotedPrice) form.append("quoted_price", quotedPrice)
+      form.append("delivery_date", expectedDelivery)
+      form.append("requires_approval", String(requiresApproval))
+      for (const img of images) form.append("images", img.file)
+      return api.post("/orders/", form)
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["orders"] })
+      toast.success("Order created", {
+        description: requiresApproval
+          ? `${furnitureType} sent for Director approval.`
+          : `${furnitureType} added to the ops queue.`,
+      })
+      resetForm()
+      setOpen(false)
+    },
+    onError: (err: { response?: { data?: { errors?: FieldErrors; detail?: string } } }) => {
+      const data = err.response?.data
+      if (data?.errors) {
+        setFieldErrors(data.errors)
+      } else {
+        toast.error(data?.detail ?? "Failed to create order.")
+      }
+    },
+  })
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger
-        render={
-          <Button>
-            <Plus data-icon="inline-start" />
-            New Order
-          </Button>
-        }
-      />
+    <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) resetForm() }}>
+      <DialogTrigger render={<Button><Plus data-icon="inline-start" />New Order</Button>} />
+
       <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Create new order</DialogTitle>
           <DialogDescription>
-            Capture the customer&apos;s details and quote. The order is sent to
-            the workshop unless it needs Director price approval.
+            Capture the customer&apos;s details and quote. The order goes straight
+            to the ops queue unless Director price approval is needed.
           </DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit}>
+        <form
+          onSubmit={(e) => { e.preventDefault(); create.mutate() }}
+        >
           <FieldGroup>
             <Field>
               <FieldLabel htmlFor="customerName">Customer name</FieldLabel>
@@ -134,17 +153,19 @@ export function CreateOrderDialog() {
                 onChange={(e) => setCustomerName(e.target.value)}
                 placeholder="e.g. Amina Yusuf"
               />
+              <FieldError errors={fieldErrors.customer_name?.map((m) => ({ message: m }))} />
             </Field>
 
             <Field>
-              <FieldLabel htmlFor="contact">Contact</FieldLabel>
+              <FieldLabel htmlFor="contact">Phone / contact</FieldLabel>
               <Input
                 id="contact"
                 required
                 value={contact}
                 onChange={(e) => setContact(e.target.value)}
-                placeholder="Phone or email"
+                placeholder="+255 7xx xxx xxx"
               />
+              <FieldError errors={fieldErrors.customer_phone?.map((m) => ({ message: m }))} />
             </Field>
 
             <Field orientation="responsive">
@@ -164,10 +185,11 @@ export function CreateOrderDialog() {
                   id="size"
                   value={size}
                   onChange={(e) => setSize(e.target.value)}
-                  placeholder="e.g. 180 x 90 x 76 cm"
+                  placeholder="e.g. 180 × 90 × 76 cm"
                 />
               </Field>
             </Field>
+            <FieldError errors={fieldErrors.item_description?.map((m) => ({ message: m }))} />
 
             <Field>
               <FieldLabel htmlFor="quotedPrice">Quoted customer price</FieldLabel>
@@ -176,53 +198,35 @@ export function CreateOrderDialog() {
                 type="number"
                 min="0"
                 step="0.01"
-                required
                 value={quotedPrice}
                 onChange={(e) => setQuotedPrice(e.target.value)}
                 placeholder="0.00"
               />
+              <FieldError errors={fieldErrors.quoted_price?.map((m) => ({ message: m }))} />
             </Field>
 
-            <Field orientation="responsive">
-              <Field>
-                <FieldLabel htmlFor="orderDate">Order date</FieldLabel>
-                <Input
-                  id="orderDate"
-                  type="date"
-                  required
-                  value={orderDate}
-                  onChange={(e) => setOrderDate(e.target.value)}
-                />
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="expectedDelivery">
-                  Expected delivery
-                </FieldLabel>
-                <Input
-                  id="expectedDelivery"
-                  type="date"
-                  required
-                  value={expectedDelivery}
-                  onChange={(e) => setExpectedDelivery(e.target.value)}
-                />
-              </Field>
+            <Field>
+              <FieldLabel htmlFor="expectedDelivery">Expected delivery</FieldLabel>
+              <Input
+                id="expectedDelivery"
+                type="date"
+                required
+                min={today()}
+                value={expectedDelivery}
+                onChange={(e) => setExpectedDelivery(e.target.value)}
+              />
+              <FieldError errors={fieldErrors.delivery_date?.map((m) => ({ message: m }))} />
             </Field>
 
+            {/* Image upload */}
             <Field>
               <FieldLabel htmlFor="reference-upload">Reference photos</FieldLabel>
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                onDragOver={(e) => {
-                  e.preventDefault()
-                  setDragActive(true)
-                }}
+                onDragOver={(e) => { e.preventDefault(); setDragActive(true) }}
                 onDragLeave={() => setDragActive(false)}
-                onDrop={(e) => {
-                  e.preventDefault()
-                  setDragActive(false)
-                  addMockImages(e.dataTransfer.files)
-                }}
+                onDrop={(e) => { e.preventDefault(); setDragActive(false); addImages(e.dataTransfer.files) }}
                 className={cn(
                   "flex w-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-input bg-muted/40 px-4 py-6 text-center transition-colors hover:bg-muted/70",
                   dragActive && "border-primary bg-primary/5"
@@ -231,12 +235,8 @@ export function CreateOrderDialog() {
                 <span className="flex size-9 items-center justify-center rounded-full bg-accent text-accent-foreground">
                   <ImagePlus className="size-4" />
                 </span>
-                <span className="text-sm font-medium">
-                  Drag &amp; drop or click to add photos
-                </span>
-                <span className="text-xs text-muted-foreground">
-                  Mock upload — thumbnails are shown locally only
-                </span>
+                <span className="text-sm font-medium">Drag &amp; drop or click to add photos</span>
+                <span className="text-xs text-muted-foreground">JPEG, PNG, WEBP</span>
               </button>
               <input
                 ref={fileInputRef}
@@ -245,7 +245,7 @@ export function CreateOrderDialog() {
                 accept="image/*"
                 multiple
                 className="sr-only"
-                onChange={(e) => addMockImages(e.target.files)}
+                onChange={(e) => addImages(e.target.files)}
               />
 
               {images.length > 0 && (
@@ -255,22 +255,12 @@ export function CreateOrderDialog() {
                       key={img.id}
                       className="group relative size-16 overflow-hidden rounded-md border border-border bg-muted"
                     >
-                      {img.url ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={img.url || "/placeholder.svg"}
-                          alt={img.name}
-                          className="size-full object-cover"
-                        />
-                      ) : (
-                        <span className="flex size-full items-center justify-center text-muted-foreground">
-                          <ImagePlus className="size-4" />
-                        </span>
-                      )}
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={img.url} alt={img.file.name} className="size-full object-cover" />
                       <button
                         type="button"
                         onClick={() => removeImage(img.id)}
-                        aria-label={`Remove ${img.name}`}
+                        aria-label={`Remove ${img.file.name}`}
                         className="absolute right-0.5 top-0.5 flex size-5 items-center justify-center rounded-full bg-foreground/70 text-background opacity-0 transition-opacity group-hover:opacity-100"
                       >
                         <X className="size-3" />
@@ -281,30 +271,31 @@ export function CreateOrderDialog() {
               )}
             </Field>
 
+            {/* Approval checkbox */}
             <FieldLabel className="rounded-lg border border-border p-3">
               <Checkbox
                 checked={requiresApproval}
-                onCheckedChange={(checked) =>
-                  setRequiresApproval(checked === true)
-                }
+                onCheckedChange={(checked) => setRequiresApproval(checked === true)}
               />
               <div className="flex flex-col gap-0.5">
-                <span className="text-sm font-medium">
-                  Requires Director price approval
-                </span>
+                <span className="text-sm font-medium">Requires Director price approval</span>
                 <FieldDescription>
-                  Tick for bargained or non-catalogue pricing. The order waits as
-                  Pending Approval instead of going straight to the workshop.
+                  Tick for bargained or non-catalogue pricing.
                 </FieldDescription>
               </div>
             </FieldLabel>
+
+            {fieldErrors.non_field && (
+              <p className="text-sm text-destructive">{fieldErrors.non_field[0]}</p>
+            )}
           </FieldGroup>
 
           <DialogFooter className="mt-6">
-            <DialogClose render={<Button type="button" variant="outline" />}>
-              Cancel
-            </DialogClose>
-            <Button type="submit">Create order</Button>
+            <DialogClose render={<Button type="button" variant="outline" />}>Cancel</DialogClose>
+            <Button type="submit" disabled={create.isPending}>
+              {create.isPending && <Loader2 className="size-4 animate-spin" />}
+              Create order
+            </Button>
           </DialogFooter>
         </form>
       </DialogContent>

@@ -1,51 +1,29 @@
 "use client"
 
-import { useMemo, useState } from "react"
-
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { useBranch } from "@/components/shop/branch-store"
-import { useShowroom } from "@/components/shop/showroom-store"
-import { ShowroomInventoryScreen } from "@/components/shop/showroom-inventory-screen"
-import { OtherBranchesScreen } from "@/components/shop/other-branches-screen"
-
-type ShopTab = "inventory" | "other"
+import { Store } from "lucide-react"
+import { Card, CardContent } from "@/components/ui/card"
 
 export function ShopFrontDeskPortal() {
-  const { activeBranch } = useBranch()
-  const { transfers } = useShowroom()
-  const [tab, setTab] = useState<ShopTab>("inventory")
-
-  // Badge the Other branches tab with this branch's open transfer requests.
-  const pendingTransfers = useMemo(
-    () =>
-      transfers.filter(
-        (t) => t.toBranchId === activeBranch.id && t.status === "Pending"
-      ).length,
-    [transfers, activeBranch.id]
-  )
-
   return (
     <div className="flex flex-col gap-6">
-      <Tabs
-        value={tab}
-        onValueChange={(v) => setTab(v as ShopTab)}
-        className="gap-0"
-      >
-        <TabsList className="h-auto flex-wrap">
-          <TabsTrigger value="inventory">My inventory</TabsTrigger>
-          <TabsTrigger value="other" className="gap-1.5">
-            Other branches
-            {pendingTransfers > 0 && (
-              <span className="rounded-full bg-foreground/10 px-1.5 text-xs font-medium tabular-nums">
-                {pendingTransfers}
-              </span>
-            )}
-          </TabsTrigger>
-        </TabsList>
-      </Tabs>
-
-      {tab === "inventory" && <ShowroomInventoryScreen />}
-      {tab === "other" && <OtherBranchesScreen />}
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 flex size-10 items-center justify-center rounded-lg bg-accent text-accent-foreground">
+          <Store className="size-5" />
+        </span>
+        <div className="space-y-1">
+          <h1 className="text-2xl font-semibold tracking-tight text-balance">
+            Showroom Inventory
+          </h1>
+          <p className="max-w-2xl text-pretty text-muted-foreground">
+            View and manage your branch&apos;s showroom furniture sets and transfer requests.
+          </p>
+        </div>
+      </div>
+      <Card>
+        <CardContent className="py-16 text-center text-muted-foreground">
+          Coming soon — API integration in progress.
+        </CardContent>
+      </Card>
     </div>
   )
 }

@@ -1,10 +1,10 @@
-import { StockProvider } from "@/components/stock-keeper/stock-store"
+import { RoleGuard } from "@/components/auth/role-guard"
 import { StockKeeperPortal } from "@/components/stock-keeper/stock-keeper-portal"
 
 export default function StockKeeperPage() {
   return (
-    <StockProvider>
+    <RoleGuard allowedRole="STOCK_KEEPER">
       <StockKeeperPortal />
-    </StockProvider>
+    </RoleGuard>
   )
 }

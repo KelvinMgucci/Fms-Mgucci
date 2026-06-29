@@ -1,5 +1,11 @@
-import { EnterStockScreen } from "@/components/shop/enter-stock-screen"
+import { Card, CardContent } from "@/components/ui/card"
 
 export default function ShowroomStockPage() {
-  return <EnterStockScreen />
+  return (
+    <Card>
+      <CardContent className="py-16 text-center text-muted-foreground">
+        Coming soon — API integration in progress.
+      </CardContent>
+    </Card>
+  )
 }

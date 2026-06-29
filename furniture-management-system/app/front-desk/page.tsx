@@ -1,10 +1,10 @@
-import { OrdersProvider } from "@/components/front-desk/orders-store"
+import { RoleGuard } from "@/components/auth/role-guard"
 import { OrdersDashboard } from "@/components/front-desk/orders-dashboard"
 
 export default function FrontDeskPage() {
   return (
-    <OrdersProvider>
+    <RoleGuard allowedRole="FRONT_DESK">
       <OrdersDashboard />
-    </OrdersProvider>
+    </RoleGuard>
   )
 }

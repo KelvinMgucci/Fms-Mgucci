@@ -2,10 +2,11 @@
 
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
-import { Armchair, Check, ChevronsUpDown, MapPin } from "lucide-react"
+import { Armchair, ChevronsUpDown, LogOut, Settings, User } from "lucide-react"
 
 import { roles, getRoleByHref, type RoleId } from "@/lib/roles"
 import { cn } from "@/lib/utils"
+import { useAuth } from "@/app/providers"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -17,29 +18,22 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { BranchProvider, useBranch } from "@/components/shop/branch-store"
-import { ShowroomProvider } from "@/components/shop/showroom-store"
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  return (
-    <BranchProvider>
-      <ShowroomProvider>
-        <AppShellContent>{children}</AppShellContent>
-      </ShowroomProvider>
-    </BranchProvider>
-  )
+  const pathname = usePathname()
+
+  if (pathname === "/login") {
+    return <>{children}</>
+  }
+
+  return <AuthenticatedShell>{children}</AuthenticatedShell>
 }
 
-function AppShellContent({ children }: { children: React.ReactNode }) {
+function AuthenticatedShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
+  const { user, logout } = useAuth()
   const activeRole = getRoleByHref(pathname) ?? roles[0]
-  // Only the Front Desk operates against a single, selected branch.
-  const isFrontDesk = activeRole.id === "front-desk"
-
-  function handleSelectRole(href: string) {
-    router.push(href)
-  }
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
@@ -59,48 +53,43 @@ function AppShellContent({ children }: { children: React.ReactNode }) {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            {isFrontDesk && <BranchSelector />}
-
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                render={
-                  <Button variant="outline" size="sm" className="gap-2">
-                    <activeRole.icon data-icon="inline-start" />
-                    <span className="max-w-24 truncate sm:max-w-none">
-                      {activeRole.label}
-                    </span>
-                    <ChevronsUpDown
-                      data-icon="inline-end"
-                      className="opacity-60"
-                    />
-                  </Button>
-                }
-              />
-              <DropdownMenuContent align="end" className="w-60">
-                <DropdownMenuGroup>
-                  <DropdownMenuLabel>Preview as role</DropdownMenuLabel>
-                  {roles.map((role) => (
-                    <DropdownMenuItem
-                      key={role.id}
-                      onClick={() => handleSelectRole(role.href)}
-                      className="gap-2"
-                    >
-                      <role.icon />
-                      <span className="flex-1 truncate">{role.label}</span>
-                      {role.id === activeRole.id && (
-                        <Check className="text-primary" />
-                      )}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuGroup>
-                <DropdownMenuSeparator />
-                <p className="px-1.5 py-1 text-xs text-muted-foreground">
-                  Dev preview only — not real authentication.
-                </p>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button variant="outline" size="sm" className="gap-2">
+                  <User data-icon="inline-start" className="size-4" />
+                  <span className="max-w-28 truncate sm:max-w-none">
+                    {user?.full_name || user?.username || activeRole.label}
+                  </span>
+                  <ChevronsUpDown
+                    data-icon="inline-end"
+                    className="opacity-60"
+                  />
+                </Button>
+              }
+            />
+            <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuGroup>
+                <DropdownMenuLabel className="font-normal">
+                  <p className="text-sm font-medium">{user?.full_name || user?.username}</p>
+                  <p className="text-xs text-muted-foreground">{activeRole.label}</p>
+                </DropdownMenuLabel>
+              </DropdownMenuGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem className="gap-2" onClick={() => router.push("/settings")}>
+                <Settings className="size-4" />
+                Account settings
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                className="gap-2 text-destructive focus:text-destructive"
+                onClick={() => logout()}
+              >
+                <LogOut className="size-4" />
+                Sign out
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
 
         <nav className="border-t border-border/60 bg-card">
@@ -145,51 +134,6 @@ function AppShellContent({ children }: { children: React.ReactNode }) {
         {children}
       </main>
     </div>
-  )
-}
-
-function BranchSelector() {
-  const { branches, activeBranch, activeBranchId, setActiveBranchId } =
-    useBranch()
-
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        render={
-          <Button variant="outline" size="sm" className="gap-2">
-            <MapPin data-icon="inline-start" />
-            <span className="max-w-24 truncate sm:max-w-none">
-              Branch {activeBranch.code}
-            </span>
-            <ChevronsUpDown data-icon="inline-end" className="opacity-60" />
-          </Button>
-        }
-      />
-      <DropdownMenuContent align="end" className="w-56">
-        <DropdownMenuGroup>
-          <DropdownMenuLabel>Active branch</DropdownMenuLabel>
-          {branches.map((branch) => (
-            <DropdownMenuItem
-              key={branch.id}
-              onClick={() => setActiveBranchId(branch.id)}
-              className="gap-2"
-            >
-              <span className="flex size-6 items-center justify-center rounded bg-secondary text-xs font-semibold text-secondary-foreground">
-                {branch.code}
-              </span>
-              <span className="flex-1 truncate">{branch.name}</span>
-              {branch.id === activeBranchId && (
-                <Check className="text-primary" />
-              )}
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuGroup>
-        <DropdownMenuSeparator />
-        <p className="px-1.5 py-1 text-xs text-muted-foreground">
-          Front Desk views are scoped to this branch.
-        </p>
-      </DropdownMenuContent>
-    </DropdownMenu>
   )
 }
 

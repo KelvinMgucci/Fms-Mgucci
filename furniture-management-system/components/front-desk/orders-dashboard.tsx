@@ -1,11 +1,12 @@
 "use client"
 
 import { useMemo, useState } from "react"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { CheckCircle2, ClipboardList, PackageCheck } from "lucide-react"
 import { toast } from "sonner"
 
+import api from "@/lib/api"
 import { cn } from "@/lib/utils"
-import type { Order, OrderStatus } from "@/lib/mock-data"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -17,27 +18,58 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { useOrders } from "@/components/front-desk/orders-store"
-import { StatusBadge } from "@/components/front-desk/status-badge"
+import { StatusBadge, type OrderStatus } from "@/components/front-desk/status-badge"
 import { CreateOrderDialog } from "@/components/front-desk/create-order-dialog"
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface ApiOrder {
+  id: number
+  reference_number: string
+  status: OrderStatus
+  customer_name: string
+  customer_phone: string
+  item_description: string
+  quoted_price: string | null
+  confirmed_price: string | null
+  delivery_date: string | null
+  notes: string
+  branch_id: number
+  created_by_id: number
+  created_at: string
+  updated_at: string
+  images: { id: number; url: string }[]
+}
+
+// ---------------------------------------------------------------------------
+// Filters
+// ---------------------------------------------------------------------------
 
 type FilterValue = "all" | OrderStatus
 
 const FILTERS: { value: FilterValue; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "Pending Approval", label: "Pending" },
-  { value: "In Workshop", label: "In Workshop" },
-  { value: "Ready for Collection", label: "Ready" },
-  { value: "Collected", label: "Collected" },
+  { value: "all",               label: "All" },
+  { value: "PRICE_REVIEW",      label: "Pending Approval" },
+  { value: "OPS_QUEUE",         label: "Ops Queue" },
+  { value: "IN_PRODUCTION",     label: "In Production" },
+  { value: "WORKSHOP_COMPLETE", label: "Ready" },
+  { value: "DISPATCHED",        label: "Dispatched" },
 ]
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 const currency = new Intl.NumberFormat("en-US", {
   style: "currency",
-  currency: "USD",
+  currency: "TZS",
   maximumFractionDigits: 0,
 })
 
-function formatDate(iso: string): string {
+function formatDate(iso: string | null): string {
+  if (!iso) return "—"
   return new Date(iso).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
@@ -45,51 +77,67 @@ function formatDate(iso: string): string {
   })
 }
 
-function formatDateTime(iso: string): string {
-  return new Date(iso).toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  })
+function splitDescription(desc: string): { type: string; size: string } {
+  const [type, size = ""] = desc.split(" — ", 2)
+  return { type, size }
 }
 
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
 export function OrdersDashboard() {
-  const { orders, markCollected } = useOrders()
+  const queryClient = useQueryClient()
   const [filter, setFilter] = useState<FilterValue>("all")
+
+  const { data: orders = [], isLoading } = useQuery({
+    queryKey: ["orders"],
+    queryFn: async () => {
+      const { data } = await api.get<ApiOrder[]>("/orders/")
+      return data
+    },
+  })
+
+  const collect = useMutation({
+    mutationFn: (id: number) => api.post(`/orders/${id}/collect/`),
+    onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: ["orders"] })
+      const order = orders.find((o) => o.id === id)
+      toast.success("Marked as collected", {
+        description: order
+          ? `${order.reference_number} · ${order.customer_name}`
+          : undefined,
+      })
+    },
+    onError: () => toast.error("Failed to mark as collected."),
+  })
 
   const counts = useMemo(() => {
     const base: Record<FilterValue, number> = {
       all: orders.length,
-      "Pending Approval": 0,
-      "In Workshop": 0,
-      "Ready for Collection": 0,
-      Collected: 0,
+      PENDING: 0,
+      PRICE_REVIEW: 0,
+      OPS_QUEUE: 0,
+      IN_PRODUCTION: 0,
+      WORKSHOP_COMPLETE: 0,
+      DISPATCHED: 0,
     }
-    for (const o of orders) base[o.status] += 1
+    for (const o of orders) {
+      if (o.status in base) base[o.status as FilterValue] += 1
+    }
     return base
   }, [orders])
 
   const visible = useMemo(() => {
-    const list =
-      filter === "all" ? orders : orders.filter((o) => o.status === filter)
-    // Surface ready-for-collection first, then by soonest delivery.
+    const list = filter === "all" ? orders : orders.filter((o) => o.status === filter)
     return [...list].sort((a, b) => {
-      const aReady = a.status === "Ready for Collection" ? 0 : 1
-      const bReady = b.status === "Ready for Collection" ? 0 : 1
-      if (aReady !== bReady) return aReady - bReady
-      return a.expectedDelivery.localeCompare(b.expectedDelivery)
+      if (a.status === "WORKSHOP_COMPLETE" && b.status !== "WORKSHOP_COMPLETE") return -1
+      if (b.status === "WORKSHOP_COMPLETE" && a.status !== "WORKSHOP_COMPLETE") return 1
+      return (a.delivery_date ?? "").localeCompare(b.delivery_date ?? "")
     })
   }, [orders, filter])
 
-  const readyCount = counts["Ready for Collection"]
-
-  function handleCollect(order: Order) {
-    markCollected(order.id)
-    toast.success("Marked as collected", {
-      description: `${order.id} · ${order.customerName} — recorded just now.`,
-    })
-  }
+  const readyCount = counts["WORKSHOP_COMPLETE"]
 
   return (
     <div className="flex flex-col gap-6">
@@ -123,11 +171,7 @@ export function OrdersDashboard() {
         </Card>
       )}
 
-      <Tabs
-        value={filter}
-        onValueChange={(v) => setFilter(v as FilterValue)}
-        className="gap-4"
-      >
+      <Tabs value={filter} onValueChange={(v) => setFilter(v as FilterValue)} className="gap-4">
         <TabsList className="h-auto flex-wrap">
           {FILTERS.map((f) => (
             <TabsTrigger key={f.value} value={f.value} className="gap-1.5">
@@ -149,74 +193,66 @@ export function OrdersDashboard() {
                 <TableHead>Customer</TableHead>
                 <TableHead>Furniture</TableHead>
                 <TableHead className="text-right">Quoted</TableHead>
-                <TableHead>Expected</TableHead>
+                <TableHead>Delivery</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Action</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {visible.length === 0 && (
+              {isLoading && (
                 <TableRow>
-                  <TableCell
-                    colSpan={7}
-                    className="py-10 text-center text-muted-foreground"
-                  >
+                  <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                    Loading orders…
+                  </TableCell>
+                </TableRow>
+              )}
+              {!isLoading && visible.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
                     No orders in this view.
                   </TableCell>
                 </TableRow>
               )}
               {visible.map((order) => {
-                const isReady = order.status === "Ready for Collection"
+                const isReady = order.status === "WORKSHOP_COMPLETE"
+                const { type, size } = splitDescription(order.item_description)
                 return (
                   <TableRow
                     key={order.id}
                     className={cn(
-                      isReady &&
-                        "bg-green-50/70 hover:bg-green-50 dark:bg-green-950/30"
+                      isReady && "bg-green-50/70 hover:bg-green-50 dark:bg-green-950/30"
                     )}
                   >
                     <TableCell className="font-medium tabular-nums">
-                      {order.id}
+                      {order.reference_number}
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-col">
-                        <span className="font-medium">{order.customerName}</span>
-                        <span className="text-xs text-muted-foreground">
-                          {order.contact}
-                        </span>
+                        <span className="font-medium">{order.customer_name}</span>
+                        <span className="text-xs text-muted-foreground">{order.customer_phone}</span>
                       </div>
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-col">
-                        <span>{order.furnitureType}</span>
-                        {order.size && (
-                          <span className="text-xs text-muted-foreground">
-                            {order.size}
-                          </span>
-                        )}
+                        <span>{type}</span>
+                        {size && <span className="text-xs text-muted-foreground">{size}</span>}
                       </div>
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
-                      {currency.format(order.quotedPrice)}
+                      {order.quoted_price ? currency.format(Number(order.quoted_price)) : "—"}
                     </TableCell>
                     <TableCell className="whitespace-nowrap text-muted-foreground">
-                      {formatDate(order.expectedDelivery)}
+                      {formatDate(order.delivery_date)}
                     </TableCell>
                     <TableCell>
-                      <div className="flex flex-col gap-1">
-                        <StatusBadge order={order} />
-                        {order.status === "Collected" && order.collectedAt && (
-                          <span className="text-xs text-muted-foreground">
-                            Collected {formatDateTime(order.collectedAt)}
-                          </span>
-                        )}
-                      </div>
+                      <StatusBadge status={order.status} />
                     </TableCell>
                     <TableCell className="text-right">
                       {isReady ? (
                         <Button
                           size="sm"
-                          onClick={() => handleCollect(order)}
+                          disabled={collect.isPending && collect.variables === order.id}
+                          onClick={() => collect.mutate(order.id)}
                         >
                           <CheckCircle2 data-icon="inline-start" />
                           Mark Collected

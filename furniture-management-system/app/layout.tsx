@@ -2,6 +2,7 @@ import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 import { AppShell } from '@/components/app-shell'
+import { Providers } from '@/app/providers'
 import { Toaster } from '@/components/ui/sonner'
 import './globals.css'
 
@@ -54,8 +55,10 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} bg-background`}
     >
       <body className="font-sans antialiased">
-        <AppShell>{children}</AppShell>
-        <Toaster />
+        <Providers>
+          <AppShell>{children}</AppShell>
+          <Toaster />
+        </Providers>
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>
     </html>
