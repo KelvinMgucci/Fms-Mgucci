@@ -6,8 +6,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from users.models import User
+from users.models import AuditLog, User
 from .models import InventoryItem, Issuance, MaterialRequest, RestockRequest
+from .services import log_inventory_event
 
 _REQUIRED = "This field is required."
 _NOT_AUTHORIZED = "Not authorized."
@@ -148,6 +149,10 @@ class InventoryItemListCreateView(APIView):
             name=name, unit=unit,
             current_quantity=qty, minimum_threshold=threshold,
         )
+        log_inventory_event(
+            request.user, "inventory_item_created", item,
+            {"name": name, "current_quantity": str(qty), "minimum_threshold": str(threshold)},
+        )
         return Response(_item_payload(item), status=201)
 
 
@@ -170,6 +175,7 @@ class InventoryItemDetailView(APIView):
 
         errors: dict[str, list[str]] = {}
         update_fields = []
+        audit_changes: dict[str, dict[str, str]] = {}
 
         if "name" in request.data:
             val = str(request.data["name"]).strip()
@@ -193,6 +199,7 @@ class InventoryItemDetailView(APIView):
                     val = Decimal(str(request.data[field]))
                     if val < 0:
                         raise InvalidOperation
+                    audit_changes[field] = {"from": str(getattr(item, field)), "to": str(val)}
                     setattr(item, field, val)
                     update_fields.append(field)
                 except InvalidOperation:
@@ -203,6 +210,8 @@ class InventoryItemDetailView(APIView):
 
         if update_fields:
             item.save(update_fields=update_fields)
+            if audit_changes:
+                log_inventory_event(request.user, "inventory_item_updated", item, audit_changes)
 
         return Response(_item_payload(item))
 
@@ -379,23 +388,26 @@ class IssuanceListCreateView(APIView):
         except OrderModel.DoesNotExist:
             return Response({"detail": "Order not found."}, status=404)
 
-        try:
-            inv_item = InventoryItem.objects.select_for_update().get(pk=item_id)
-        except InventoryItem.DoesNotExist:
-            return Response({"detail": "Inventory item not found."}, status=404)
-
-        if inv_item.current_quantity < qty:
-            return Response(
-                {"detail": f"Insufficient stock: {inv_item.current_quantity} {inv_item.unit} available."},
-                status=400,
-            )
-
         stage_id = request.data.get("stage_id")
         issuance_type = str(request.data.get("issuance_type", "INITIAL")).strip().upper()
         if issuance_type not in ("INITIAL", "ADDITIONAL"):
             issuance_type = "INITIAL"
 
+        # select_for_update() requires an open transaction, so the lock, the
+        # sufficiency check, and the deduction must all happen inside the
+        # same atomic block to avoid a race between two concurrent issuances.
         with transaction.atomic():
+            try:
+                inv_item = InventoryItem.objects.select_for_update().get(pk=item_id)
+            except InventoryItem.DoesNotExist:
+                return Response({"detail": "Inventory item not found."}, status=404)
+
+            if inv_item.current_quantity < qty:
+                return Response(
+                    {"detail": f"Insufficient stock: {inv_item.current_quantity} {inv_item.unit} available."},
+                    status=400,
+                )
+
             inv_item.current_quantity -= qty
             inv_item.save(update_fields=["current_quantity"])
             iss = Issuance.objects.create(
@@ -405,6 +417,10 @@ class IssuanceListCreateView(APIView):
                 quantity_issued=qty,
                 issued_by=request.user,
                 issuance_type=issuance_type,
+            )
+            log_inventory_event(
+                request.user, "material_issued", inv_item,
+                {"quantity_issued": str(qty), "order_reference": order.reference_number},
             )
 
         iss = Issuance.objects.select_related("order", "inventory_item", "issued_by").get(pk=iss.pk)
@@ -521,7 +537,47 @@ class RestockRequestReviewView(APIView):
             else RestockRequest.Status.REJECTED
         )
         req.save(update_fields=["status", "reviewed_by", "review_notes", "reviewed_at"])
+
+        if req.status == RestockRequest.Status.APPROVED and req.inventory_item_id:
+            log_inventory_event(
+                request.user, "restock_approved", req.inventory_item,
+                {"quantity_needed": str(req.quantity_needed), "item_name": req.item_name},
+            )
+
         return Response(_restock_payload(req))
+
+
+class InventoryAuditLogView(APIView):
+    """GET /api/stock/audit-log/ — inventory change history (Stock Keeper, Ops Manager, Director)."""
+    permission_classes = [IsAuthenticated]
+
+    _ALLOWED_ROLES = {User.Role.STOCK_KEEPER, User.Role.OPS_MANAGER, User.Role.DIRECTOR}
+
+    def get(self, request):
+        if request.user.role not in self._ALLOWED_ROLES:
+            return Response({"detail": _NOT_AUTHORIZED}, status=403)
+
+        qs = AuditLog.objects.filter(resource_type="InventoryItem").select_related("user")
+
+        item_id = request.query_params.get("item_id")
+        if item_id:
+            qs = qs.filter(resource_id=str(item_id))
+
+        qs = qs.order_by("-created_at")[:200]
+        return Response({
+            "results": [
+                {
+                    "id": log.id,
+                    "action": log.action,
+                    "inventory_item_id": int(log.resource_id) if log.resource_id.isdigit() else None,
+                    "performed_by_id": log.user_id,
+                    "performed_by_name": (log.user.get_full_name() or log.user.username) if log.user else None,
+                    "metadata": log.metadata,
+                    "created_at": log.created_at.isoformat(),
+                }
+                for log in qs
+            ]
+        })
 
 
 class TechnicianListView(APIView):
