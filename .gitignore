@@ -41,6 +41,7 @@ Workshop_Management_System_BRD.*
 Workshop_Workflows.docx
 Workshop_Flowchart.pdf
 FMS_Daily_Tracking_Checklist.*
+FMS_System_Architecture.md
 # Keep only the operations flow manual
 *.docx
 !FMS_Operations_Flow_Manual.docx
