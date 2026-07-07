@@ -26,7 +26,11 @@ export function proxy(request: NextRequest) {
 
 export const config = {
   matcher: [
-    // Skip Next.js internals, static assets, and RSC navigation requests
-    "/((?!_next/static|_next/image|favicon.*|icon.*|apple-icon.*).*)",
+    // Skip Next.js internals, static assets, RSC navigation requests, and
+    // /api/* — those are proxied straight to Django (see next.config.mjs),
+    // which has its own cookie-based auth. Gating them here would redirect
+    // unauthenticated API calls (e.g. the login POST itself) to /login
+    // instead of ever reaching the backend.
+    "/((?!api|_next/static|_next/image|favicon.*|icon.*|apple-icon.*).*)",
   ],
 }
